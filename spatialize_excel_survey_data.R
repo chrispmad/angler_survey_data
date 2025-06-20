@@ -29,8 +29,6 @@ wmus <- bcdc_query_geodata("wildlife-management-units") |>
          REGION_RESPONSIBLE_NAME, geometry) |>
   st_transform(4326)
 
-
-
 if(!file.exists(paste0(onedrive_wd,"named_lakes_and_rivers.rds"))){
   named_lakes = bcdc_query_geodata('freshwater-atlas-lakes') |>
     filter(!is.na(GNIS_NAME_1)) |>
@@ -142,58 +140,70 @@ named_wbs_units_regs = named_wbs_units |>
 # "Vancouver Island"), if we do an inner join we should be fine!
 #now we attempt to join the dat to this named_wbs_units by matching the wildlife management unit id
 
-dat_combined <- dat |>
-  dplyr::mutate(row_id = dplyr::row_number()) |>
-  left_join(
-    named_wbs_units_regs |> sf::st_drop_geometry(),
-    by = c("region","management_unit", "waterbody")
+dat_combined = named_wbs_units_regs |>
+  dplyr::right_join(
+    dat |>
+      dplyr::mutate(row_id = dplyr::row_number())
   )
+# We've created an additional 17 rows: these are cases where
+# more than one waterbody exists for a given combination of
+# name, management unit, and region.
 
+# For now, let's simply keep the largest waterbody in each such group.
+dat_combined_keep_test = dat_combined |>
+  dplyr::group_by(waterbody, management_unit, region) |>
+  dplyr::group_split() |>
+  purrr::map( ~ {
+    if(nrow(.x)){
+      output = .x |>
+        dplyr::mutate(wb_area = sf::st_area(geometry)) |>
+        dplyr::mutate(keep_me = wb_area == max(wb_area))
+    } else {
+      output = .x |>
+        dplyr::mutate(keep_me = TRUE)
+    }
+    output
+  }, .progress = T) |>
+  dplyr::bind_rows()
 
-dat_combined |>
-  dplyr::filter(duplicated(row_id))
+# Drop those rows we've identified!
+dat_combined = dat_combined_keep_test |>
+  dplyr::filter(keep_me)
 
-complete_rows <- dat_combined |>
-  filter(!is.na(watershed), !is.na(BLUE_LINE_KEY))
-incomplete_rows <- dat_combined |>
-  filter(is.na(watershed) | is.na(BLUE_LINE_KEY))
-incomplete_nogeo <- st_drop_geometry(incomplete_rows)
+# Hmmm... one remaining issue! 1,041 rows did NOT receive a geometry :O
+# Were those not present in the named_wbs??
+dat_final = dat_combined
 
-# Create combined keys in both datasets
-incomplete_rows <- incomplete_rows |>
-  mutate(wb_mu_key = paste0(waterbody, "_", management_unit))
+# complete_rows <- dat_combined |>
+#   filter(!is.na(watershed), !is.na(BLUE_LINE_KEY))
+# incomplete_rows <- dat_combined |>
+#   filter(is.na(watershed) | is.na(BLUE_LINE_KEY))
+# incomplete_nogeo <- st_drop_geometry(incomplete_rows)
 
-complete_rows <- complete_rows |>
-  mutate(wb_mu_key = paste0(waterbody, "_", management_unit))
+# # Create combined keys in both datasets
+# incomplete_rows <- incomplete_rows |>
+#   mutate(wb_mu_key = paste0(waterbody, "_", management_unit))
+#
+# complete_rows <- complete_rows |>
+#   mutate(wb_mu_key = paste0(waterbody, "_", management_unit))
 
-matching_keys <- intersect(incomplete_rows$wb_mu_key, complete_rows$wb_mu_key)
+# matching_keys <- intersect(incomplete_rows$wb_mu_key, complete_rows$wb_mu_key)
 
 # We aren't getting matches for these - so I don't think we can do much with them
 
+# empty_geoms <- dat_combined[st_is_empty(dat_combined), ]
+# #remove those rows with no geometry
+# dat_combined <- dat_combined[!st_is_empty(dat_combined), ]
 
-dat_combined <- dat_combined |>
-  dplyr::group_by(waterbody, watershed) |>
-  dplyr::summarise(
-    fishing_days = sum(fishing_days, na.rm = TRUE),
-    expenditures = sum(expenditures, na.rm = TRUE),
-    do_union = TRUE,
-    .groups = "drop"
-  ) |>
-  sf::st_as_sf()
-
-empty_geoms <- dat_combined[st_is_empty(dat_combined), ]
-#remove those rows with no geometry
-dat_combined <- dat_combined[!st_is_empty(dat_combined), ]
-
-#summarise to remove duplicate rows and add the fishing days and expenditures
-# Assuming your data is in a variable called dat_combined
-dat_final <- dat_combined |>
-  group_by(waterbody, BLUE_LINE_KEY, FWA_WATERSHED_CODE, watershed) |>
-  summarise(
-    fishing_days = sum(fishing_days, na.rm = TRUE),
-    expenditures = sum(expenditures, na.rm = TRUE),
-    .groups = "drop"
-  )
+# #summarise to remove duplicate rows and add the fishing days and expenditures
+# # Assuming your data is in a variable called dat_combined
+# dat_final <- dat_combined |>
+#   group_by(waterbody, BLUE_LINE_KEY, FWA_WATERSHED_CODE, watershed) |>
+#   summarise(
+#     fishing_days = sum(fishing_days, na.rm = TRUE),
+#     expenditures = sum(expenditures, na.rm = TRUE),
+#     .groups = "drop"
+#   )
 
 
 
@@ -214,10 +224,11 @@ p1<-ggplot() +
     fill = "Fishing Days",
     color = "Fishing Days"
   )
+
+p1
+
 # drop data with na in fishing_days
 dat_final<- dat_final[!is.na(dat_final$fishing_days), ]
-
-
 
 # save the new data into an output folder
 sf::st_write(dat_final, paste0("output/fishing_days_by_waterbody.gpkg"), append = F)
