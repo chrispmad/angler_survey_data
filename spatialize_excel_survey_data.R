@@ -9,13 +9,13 @@ base_dir = stringr::str_extract(getwd(),"C:\\/Users\\/[a-zA-Z]+")
 onedrive_wd = paste0(str_extract(getwd(),"C:/Users/[A-Z]+/"),"OneDrive - Government of BC/data/")
 lan_root = "//SFP.IDIR.BCGOV/S140/S40203/WFC AEB/General/"
 
-dat<-read_excel("data/2023-24 iSEA waterbody level fishing days and expenditures.xlsx", sheet = 1, col_names = T)
+dat<-read_excel("data/2023-24 iSEA waterbody level fishing days and expenditures (002).xlsx", sheet = 1, col_names = T)
 #remove the other stuff on the right of the sheet
 dat<-dat[,1:5]
 #snakecase column names
 colnames(dat)<-snakecase::to_snake_case(colnames(dat))
-#remove the first row
-dat<-dat[-1,]
+# # remove the first row
+# dat<-dat[-1,]
 
 #just in cased
 bc = bcmaps::bc_bound() |>
@@ -59,33 +59,99 @@ if(!file.exists(paste0(onedrive_wd,"named_lakes_and_rivers.rds"))){
   named_wbs = readRDS(paste0(onedrive_wd,"named_lakes_and_rivers.rds"))
 }
 
+# Merge named waterbodies by waterbody and watershed - this does tempt the risk
+# of joining together identically named waterbodies if they exist in the
+# same watershed... but it also helps us join together waterbodies
+# that we can effectively consider to be the same waterbody,
+# e.g., Trevlac Pond:
+leaflet() |> addTiles() |> addPolygons(data = named_wbs |> dplyr::filter(waterbody == 'Trevlac Pond'))
 
+# Let's merge the named_wbs based on name, watershed number, wb_type, but
+# NOT on blue_line_key or FWA code, since different polygons that are part of
+# the same river / clump of ponds will have different BLKs and FWA codes... gah!
+if(!file.exists(paste0(onedrive_wd,"named_lakes_and_rivers_merged.rds"))){
+  # Initially, there are 9215 rows in 'named_wbs'
+  named_wbs = named_wbs |>
+    dplyr::group_by(waterbody, watershed, wb_type) |>
+    dplyr::summarise() |>
+    dplyr::ungroup()
+  # Now there are 8,738 rows.
+  saveRDS(named_wbs, paste0(onedrive_wd,"named_lakes_and_rivers_merged.rds"))
+} else {
+  named_wbs = readRDS(paste0(onedrive_wd,"named_lakes_and_rivers_merged.rds"))
+}
 
+if(!file.exists("data/named_waterbodides_with_management_units.rds")){
+  #combine the wmus and the named waterbodies by geometry - we need to keep the wildlife management units
+  named_wbs_units <- named_wbs |>
+    sf::st_join(wmus, join = st_intersects) |>
+    dplyr::select(waterbody, watershed,
+                  WILDLIFE_MGMT_UNIT_ID, REGION_RESPONSIBLE, REGION_RESPONSIBLE_ID,
+                  REGION_RESPONSIBLE_NAME, wb_type) |>
+    dplyr::mutate(wb_type = ifelse(is.na(wb_type), "wmus", wb_type)) |>
+    dplyr::mutate(waterbody = str_to_title(waterbody)) |>
+    dplyr::distinct()
 
-#combine the wmus and the named waterbodies by geometry - we need to keep the wildlife management units
-named_wbs_units<- named_wbs |>
-  sf::st_join(wmus, join = st_intersects) |>
-  dplyr::select(waterbody, watershed, BLUE_LINE_KEY, FWA_WATERSHED_CODE, WILDLIFE_MGMT_UNIT_ID, REGION_RESPONSIBLE, REGION_RESPONSIBLE_ID,
-                REGION_RESPONSIBLE_NAME, wb_type) |>
-  dplyr::mutate(wb_type = ifelse(is.na(wb_type), "wmus", wb_type)) |>
-  dplyr::mutate(waterbody = str_to_title(waterbody)) |>
-  dplyr::distinct()
+  # A little check::
+  ws = bcdc_query_geodata('freshwater-atlas-watershed-groups') |>
+    filter(WATERSHED_GROUP_ID %in% c(165,36)) |>
+    collect()
+
+  ggplot() +
+    geom_sf(data = wmus[wmus$WILDLIFE_MGMT_UNIT_ID == '1-5',], fill = 'darkred') +
+    geom_sf(data = ws, fill = 'lightblue', alpha = 0.7) +
+    geom_sf(data = named_wbs |>
+              dplyr::filter(waterbody == 'Long Lake') |>
+              sf::st_filter(wmus[wmus$WILDLIFE_MGMT_UNIT_ID == '1-5',]),
+            col = 'pink', fill = 'pink')
+  # Ok, for cases of waterbodies that overlapped with multiple WMUs,
+  # let's combine the columns we got from WMU layer using paste0().
+
+  named_wbs_units = named_wbs_units |>
+    dplyr::group_by(waterbody, watershed) |>
+    dplyr::mutate(dplyr::across(WILDLIFE_MGMT_UNIT_ID:REGION_RESPONSIBLE_NAME, \(x) paste0(unique(x), collapse = ', '))) |>
+    dplyr::ungroup() |>
+    dplyr::filter(!duplicated(paste0(waterbody,watershed,wb_type)))
+  # This gets us back to the proper number of rows!!
+  saveRDS(named_wbs_units, "data/named_waterbodides_with_management_units.rds")
+} else {
+  named_wbs_units = readRDS("data/named_waterbodides_with_management_units.rds")
+}
 
 named_wbs_units$WILDLIFE_MGMT_UNIT_ID<-gsub("-", "_", named_wbs_units$WILDLIFE_MGMT_UNIT_ID)
 
 #names
 named_wbs_units<- named_wbs_units |>
   dplyr::rename(management_unit = WILDLIFE_MGMT_UNIT_ID)
-dat<- dat |>
+
+dat <- dat |>
   dplyr::rename(waterbody = water_body)
 
+# Add on FLNRO natural resource regions, since this is another
+# key column in 'dat' that we might need to join with.
+flnro_regs = sf::read_sf("W:/CMadsen/shared_data_sets/FLNRO_Fishing_Boundaries.shp")
+
+flnro_regs = sf::st_transform(flnro_regs, 4326)
+
+# Join on the region name to named_
+named_wbs_units_regs = named_wbs_units |>
+  sf::st_join(flnro_regs) |>
+  dplyr::rename(region = REGION_N)
+# This only created a few extra rows... and because the dat
+# object has a column for 'region' (these old NR regions, e.g.
+# "Vancouver Island"), if we do an inner join we should be fine!
 #now we attempt to join the dat to this named_wbs_units by matching the wildlife management unit id
 
-dat_combined<- full_join(
-  named_wbs_units,
-  dat,
-  by = c("management_unit", "waterbody")
-)
+dat_combined <- dat |>
+  dplyr::mutate(row_id = dplyr::row_number()) |>
+  left_join(
+    named_wbs_units_regs |> sf::st_drop_geometry(),
+    by = c("region","management_unit", "waterbody")
+  )
+
+
+dat_combined |>
+  dplyr::filter(duplicated(row_id))
 
 complete_rows <- dat_combined |>
   filter(!is.na(watershed), !is.na(BLUE_LINE_KEY))
