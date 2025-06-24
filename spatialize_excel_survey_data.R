@@ -16,10 +16,13 @@ dat<-dat[,1:5]
 #snakecase column names
 colnames(dat)<-snakecase::to_snake_case(colnames(dat))
 
+# Let's correct 'Ã¨' to just 'è'
+dat = dat |>
+  dplyr::mutate(water_body = str_replace_all(water_body, 'Ã¨', 'è'))
+
 #just in case
 bc = bcmaps::bc_bound() |>
   sf::st_transform(4326)
-
 
 # get the wildlife management units?
 wmus <- bcdc_query_geodata("wildlife-management-units") |>
@@ -91,7 +94,7 @@ if(!file.exists("data/named_waterbodies_with_management_units.rds")){
     dplyr::mutate(waterbody = str_to_title(waterbody)) |>
     dplyr::distinct()
 
-  # A little check::
+  # A little check
   ws = bcdc_query_geodata('freshwater-atlas-watershed-groups') |>
     filter(WATERSHED_GROUP_ID %in% c(165,36)) |>
     collect()
@@ -114,6 +117,7 @@ if(!file.exists("data/named_waterbodies_with_management_units.rds")){
     dplyr::ungroup()
 
   saveRDS(named_wbs_units_m, "data/named_waterbodies_with_management_units.rds")
+  # saveRDS(named_wbs_by_watershed, "data/named_waterbodies_with_watershed_keys.rds")
 } else {
   named_wbs_units_m = readRDS("data/named_waterbodies_with_management_units.rds")
 }
@@ -140,6 +144,9 @@ dat_combined = named_wbs_units_m |>
     by = join_by(waterbody, management_unit)
   )
 
+dat_combined = dat_combined |>
+  dplyr::filter(!st_is_empty(geometry))
+
 # What proportion of fishing days are we keeping in this spatialization
 # step?
 100*nrow(dat_combined) / nrow(dat)
@@ -147,13 +154,35 @@ dat_combined = named_wbs_units_m |>
 100*sum(dat_combined$fishing_days) / sum(dat$fishing_days)
 # 95.8% of the fishing days were successfully mapped to some geometry.
 
-dat_combined
+# Merging on watershed key!!
+ws = bcdc_query_geodata('freshwater-atlas-watershed-groups') |>
+  collect()
+
+ws = sf::st_transform(ws, 4326)
+
+dat_combined_w_watershed = dat_combined |>
+  sf::st_join(ws)
+
+## Now resummarise to waterbody name and to watershed key number.
+# Summarise to waterbody name and watershed number.
+dat_combined_w_watershed_m = dat_combined_w_watershed |>
+  dplyr::group_by(waterbody, watershed = WATERSHED_GROUP_ID) |>
+  dplyr::summarise(fishing_days = sum(fishing_days, na.rm=T),
+                   geometry = sf::st_union(geometry)) |>
+  dplyr::ungroup()
+
+dat_combined_w_watershed_m
+
+max(dat_combined_w_watershed_m$fishing_days)
+
+dat_combined_w_watershed_m |>
+  dplyr::filter(waterbody %in% c("Cultus Lake","Shuswap Lake","Kootenay Lake"))
 
 # plot the new data, with color and fill being fishing_days
 p1<-ggplot() +
   geom_sf(data = bc, fill = "white", color = "black") +
   geom_sf(
-    data = dat_combined,
+    data = dat_combined_w_watershed_m,
     aes(fill = fishing_days, color = fishing_days),
     alpha = 0.5
   ) +
@@ -172,9 +201,9 @@ ggsave(filename = "output/angler_days_by_waterbody.jpg", plot = p1,
        width = 8, height = 6, units = "in")
 
 # drop data with na in fishing_days
-dat_combined <- dat_combined[!is.na(dat_combined$fishing_days), ]
+# dat_combined <- dat_combined[!is.na(dat_combined$fishing_days), ]
 
 # save the new data into an output folder
-saveRDS(dat_combined, paste0("output/fishing_days_by_waterbody.rds"))
-saveRDS(dat_combined, paste0(onedrive_wd,"fishing_days_by_waterbody.rds"))
+saveRDS(dat_combined_w_watershed_m, paste0("output/fishing_days_by_waterbody_and_watershed.rds"))
+saveRDS(dat_combined_w_watershed_m, paste0(onedrive_wd,"fishing_days_by_waterbody_and_watershed.rds"))
 
