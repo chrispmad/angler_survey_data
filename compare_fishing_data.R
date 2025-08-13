@@ -5,14 +5,14 @@ library(stringr)
 library(viridis)
 
 base_dir = stringr::str_extract(getwd(),"C:\\/Users\\/[a-zA-Z]+")
-onedrive_wd = paste0(str_extract(getwd(),"C:/Users/[A-Z]+/"),"OneDrive - Government of BC/data/")
+onedrive_wd = "//SFP.IDIR.BCGOV/S140/S40203/WFC AEB/General/2 SCIENCE - Invasives/AIS_R_Projects/LargeDataFiles/"
 lan_root = "//SFP.IDIR.BCGOV/S140/S40203/WFC AEB/General/"
 
 #new data
 paynterdata<-sf::read_sf(paste0("output/fishing_days_by_waterbody.gpkg"))
 #old dfo data
 if(!file.exists('data/anger_survey.rds')){
-  dfo_data = sf::read_sf("W:/CMadsen/shared_data_sets/freshwater_fisheries_society_angler_survey_2022_2023.gpkg")
+  dfo_data = sf::read_sf("//SFP.IDIR.BCGOV/S140/S40203/WFC AEB/General/2 SCIENCE - Invasives/AIS_R_Projects/CMadsen_Wdrive/shared_data_sets/freshwater_fisheries_society_angler_survey_2022_2023.gpkg")
   saveRDS(dfo_data, file = 'data/anger_survey.rds')
 } else {
   dfo_data = readRDS('data/anger_survey.rds')
